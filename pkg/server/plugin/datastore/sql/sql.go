@@ -468,14 +468,17 @@ func openDB(databaseType, connectionString string) (*gorm.DB, error) {
 		db, err = sqlite{}.connect(connectionString)
 	case "postgres":
 		db, err = postgres{}.connect(connectionString)
+	case "mysql":
+		db, err = mysql{}.connect(connectionString)
 	default:
 		return nil, sqlError.New("unsupported database_type: %v", databaseType)
 	}
+
 	if err != nil {
 		return nil, err
 	}
 
-	if err := migrateDB(db); err != nil {
+	if err := migrateDB(db, databaseType); err != nil {
 		db.Close()
 		return nil, err
 	}
