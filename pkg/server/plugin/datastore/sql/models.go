@@ -16,7 +16,7 @@ type Bundle struct {
 	Model
 
 	TrustDomain string `gorm:"not null;unique_index"`
-	Data        []byte
+	Data        []byte `gorm:"size:65535"`
 
 	FederatedEntries []RegisteredEntry `gorm:"many2many:federated_registration_entries;"`
 }
@@ -72,7 +72,20 @@ type JoinToken struct {
 	Expiry int64
 }
 
-// Selector holds a selector by registered entry ID
+// MysqlJoinToken holds a join token. It is equivalent to JoinToken, but contains
+// MySQL-specific gorm tags.
+type MysqlJoinToken struct {
+	Model
+
+	Token  string `gorm:"varchar(191);unique_index"` // limit varchar for DBs that don't have `innodb_large_prefix` set
+	Expiry int64
+}
+
+// TableName gets table name of MysqlJoinToken
+func (MysqlJoinToken) TableName() string {
+	return "join_tokens"
+}
+
 type Selector struct {
 	Model
 
@@ -87,4 +100,21 @@ type Migration struct {
 
 	// Database version
 	Version int
+}
+
+// modelForDialect returns database-specific model structs
+// This function uses the language change introduced in Go 1.8 where the tags
+// are ignored when explicitly converting a value from one struct type to another.
+// (https://golang.org/doc/go1.8#language)
+// With that we can maintain separate structs for certain databases.
+func modelForDialect(model interface{}, dbType string) interface{} {
+	if dbType == "mysql" {
+		switch v := model.(type) {
+		case JoinToken:
+			return MysqlJoinToken(v)
+		default:
+			return model
+		}
+	}
+	return model
 }
