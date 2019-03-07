@@ -34,7 +34,7 @@ run_docker_test() {
 
     echo "Starting container $DOCKER_COMMAND"
     CONTAINER_ID=$(docker run $DOCKER_COMMAND)
-    sleep 10
+    sleep 15
     run_test $CONFIG_LOCATION
     docker rm -f $CONTAINER_ID
 }
@@ -86,5 +86,7 @@ run_test() {
 
 run_e2e_test "conf/server/server.conf"
 run_docker_test "test/configs/server/postgres.conf" "-e POSTGRES_PASSWORD=password -p 10864:5432 -d postgres"
-run_docker_test "test/configs/server/mysql.conf" "-e MYSQL_PASSWORD=password -e MYSQL_DATABASE=mysql -e MYSQL_USER=mysql -e MYSQL_RANDOM_ROOT_PASSWORD=rootpassword -p 6612:3306 -d mariadb:5.5"
-run_docker_test "test/configs/server/mysql.conf" "-e MYSQL_PASSWORD=password -e MYSQL_DATABASE=mysql -e MYSQL_USER=mysql -e MYSQL_RANDOM_ROOT_PASSWORD=yes -p 6612:3306 -d mysql:5.7.22"
+run_docker_test "test/configs/server/mysql.conf" "-e MYSQL_PASSWORD=password -e MYSQL_DATABASE=mysql -e MYSQL_USER=mysql -e MYSQL_RANDOM_ROOT_PASSWORD=yes -p 6612:3306 -d mysql:5.5.62"
+run_docker_test "test/configs/server/mysql.conf" "-e MYSQL_PASSWORD=password -e MYSQL_DATABASE=mysql -e MYSQL_USER=mysql -e MYSQL_RANDOM_ROOT_PASSWORD=yes -p 6612:3306 -d mysql:5.6.43"
+run_docker_test "test/configs/server/mysql.conf" "-e MYSQL_PASSWORD=password -e MYSQL_DATABASE=mysql -e MYSQL_USER=mysql -e MYSQL_RANDOM_ROOT_PASSWORD=yes -p 6612:3306 -d mysql:5.7.25"
+run_docker_test "test/configs/server/mysql.conf" "-e MYSQL_PASSWORD=password -e MYSQL_DATABASE=mysql -e MYSQL_USER=mysql -e MYSQL_RANDOM_ROOT_PASSWORD=yes -p 6612:3306 -d mysql:8.0.15"

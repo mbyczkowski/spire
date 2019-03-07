@@ -83,10 +83,21 @@ func initDB(db *gorm.DB, dbType string) (err error) {
 		modelForDialect(Migration{}, dbType),
 	}
 
-	if err := tableOptionsForDialect(tx, dbType).AutoMigrate(tables...).Error; err != nil {
-		tx.Rollback()
-		return sqlError.Wrap(err)
+	for _, table := range tables {
+		logrus.Infof("Table: %T, %+v\n", table, table)
+		if err := tableOptionsForDialect(tx, dbType).AutoMigrate(table).Error; err != nil {
+			tx.Rollback()
+			logrus.Errorf("Error when creating table %T\n", table)
+			return sqlError.Wrap(err)
+		}
 	}
+	/*
+		if err := tableOptionsForDialect(tx, dbType).AutoMigrate(tables...).Error; err != nil {
+			tx.Rollback()
+			return sqlError.Wrap(err)
+		}
+	*/
+	logrus.Infof("Done with initial migration")
 
 	if err := tx.Assign(Migration{Version: codeVersion}).FirstOrCreate(&Migration{}).Error; err != nil {
 		tx.Rollback()
@@ -102,10 +113,10 @@ func initDB(db *gorm.DB, dbType string) (err error) {
 
 func tableOptionsForDialect(tx *gorm.DB, dbType string) *gorm.DB {
 	// This allows for setting table options for a particular DB type.
-	// For MySQL, we want to make sure that all tables are set to full UTF8
-	// character set (so UTF8MB4), and to use large index key prefix (row format DYNAMIC).
+	// For MySQL, (for compatibility reasons) we want to make sure that
+	// we can support indexes on strings (varchar(255) in the DB).
 	if dbType == "mysql" {
-		return tx.Set("gorm:table_options", "ENGINE=InnoDB  ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4")
+		return tx.Set("gorm:table_options", "ENGINE=InnoDB  ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8")
 	}
 	return tx
 }
