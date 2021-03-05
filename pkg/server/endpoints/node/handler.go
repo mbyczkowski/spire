@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/andres-erbsen/clock"
+	"github.com/golang/protobuf/ptypes/wrappers"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/errorutil"
 	"github.com/spiffe/spire/pkg/common/idutil"
@@ -37,7 +38,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Number of agentIDs that can be cached
@@ -60,8 +60,6 @@ type HandlerConfig struct {
 }
 
 type Handler struct {
-	node.UnsafeNodeServer
-
 	c       HandlerConfig
 	limiter Limiter
 
@@ -160,7 +158,7 @@ func (h *Handler) Attest(stream node.Node_AttestServer) (err error) {
 			return status.Error(codes.Internal, err.Error())
 		}
 		if _, err := attestStream.Recv(); err != io.EOF {
-			log.WithError(err).Warn("Expected EOF on attestation stream")
+			log.WithError(err).Warn("expected EOF on attestation stream")
 		}
 	} else {
 		attestResponse, err = h.attestToken(ctx, request.AttestationData)
@@ -172,6 +170,11 @@ func (h *Handler) Attest(stream node.Node_AttestServer) (err error) {
 
 	agentID := attestResponse.AgentId
 	log = log.WithField(telemetry.SPIFFEID, agentID)
+
+	if err := idutil.CheckAgentIDStringNormalization(agentID); err != nil {
+		log.WithError(err).Error("Agent ID is malformed")
+		return status.Errorf(codes.Internal, "agent ID is malformed: %v", err)
+	}
 
 	isBanned, err := h.isBanned(ctx, agentID)
 	switch {
@@ -359,9 +362,14 @@ func (h *Handler) FetchX509CASVID(ctx context.Context, req *node.FetchX509CASVID
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	if err := idutil.CheckIDStringNormalization(csr.SpiffeID); err != nil {
+		log.WithError(err).Error("CSR SPIFFE ID is malformed")
+		return nil, status.Errorf(codes.InvalidArgument, "CSR SPIFFE ID is malformed: %v", err)
+	}
+
 	signLog.Debug("Signing downstream CA SVID")
 	svid, err := h.buildCASVID(ctx, ca.X509CASVIDParams{
-		SpiffeID:  csr.SpiffeID,
+		SpiffeID:  h.c.TrustDomain.String(),
 		PublicKey: csr.PublicKey,
 		TTL:       time.Duration(entry.Ttl) * time.Second,
 	})
@@ -814,7 +822,7 @@ func (h *Handler) updateNodeSelectors(ctx context.Context, baseSpiffeID string, 
 			selectors = append(selectors, resolved.Entries...)
 		}
 	} else {
-		h.c.Log.WithField(telemetry.Attestor, attestationType).Debug("Could not find node resolver")
+		h.c.Log.WithField(telemetry.Attestor, attestationType).Debug("could not find node resolver")
 	}
 
 	selectors = append(selectors, attestResponse.Selectors...)
@@ -859,7 +867,7 @@ func (h *Handler) getAttestResponse(ctx context.Context, baseSpiffeID string, sv
 func (h *Handler) getDownstreamEntry(ctx context.Context, callerID string) (*common.RegistrationEntry, error) {
 	ds := h.c.Catalog.GetDataStore()
 	response, err := ds.ListRegistrationEntries(ctx, &datastore.ListRegistrationEntriesRequest{
-		BySpiffeId: &wrapperspb.StringValue{
+		BySpiffeId: &wrappers.StringValue{
 			Value: callerID,
 		},
 	})
@@ -912,7 +920,6 @@ func (h *Handler) signCSRs(ctx context.Context, peerCert *x509.Certificate, csrs
 
 		signLog := h.c.Log.WithFields(logrus.Fields{
 			telemetry.CallerID: callerID,
-			telemetry.SPIFFEID: csr.SpiffeID,
 			telemetry.Address:  sourceAddress,
 		})
 
@@ -935,7 +942,7 @@ func (h *Handler) signCSRs(ctx context.Context, peerCert *x509.Certificate, csrs
 				return nil, errors.New("SVID serial number does not match")
 			}
 
-			signLog.Debug("Renewing agent SVID")
+			signLog.WithField(telemetry.SPIFFEID, csr.SpiffeID).Debug("Renewing agent SVID")
 			svid, svidCert, err := h.buildBaseSVID(ctx, csr)
 			if err != nil {
 				return nil, err
@@ -954,8 +961,7 @@ func (h *Handler) signCSRs(ctx context.Context, peerCert *x509.Certificate, csrs
 				return nil, err
 			}
 		} else {
-			signLog.Debug("Signing SVID")
-			svid, err := h.buildSVID(ctx, entryID, csr, regEntriesMap)
+			svid, err := h.buildSVID(ctx, entryID, csr, regEntriesMap, signLog)
 			if err != nil {
 				return nil, err
 			}
@@ -966,7 +972,7 @@ func (h *Handler) signCSRs(ctx context.Context, peerCert *x509.Certificate, csrs
 	return svids, nil
 }
 
-func (h *Handler) buildSVID(ctx context.Context, id string, csr *CSR, regEntries map[string]*common.RegistrationEntry) (*node.X509SVID, error) {
+func (h *Handler) buildSVID(ctx context.Context, id string, csr *CSR, regEntries map[string]*common.RegistrationEntry, signLog logrus.FieldLogger) (*node.X509SVID, error) {
 	entry, ok := regEntries[id]
 	if !ok {
 		var idType string
@@ -982,8 +988,9 @@ func (h *Handler) buildSVID(ctx context.Context, id string, csr *CSR, regEntries
 		return nil, errors.New("not entitled to sign CSR for given ID type")
 	}
 
+	signLog.WithField(telemetry.SPIFFEID, entry.SpiffeId).Debug("Signing SVID")
 	svid, err := h.c.ServerCA.SignX509SVID(ctx, ca.X509SVIDParams{
-		SpiffeID:  csr.SpiffeID,
+		SpiffeID:  entry.SpiffeId,
 		PublicKey: csr.PublicKey,
 		TTL:       time.Duration(entry.Ttl) * time.Second,
 		DNSList:   entry.DnsNames,
@@ -1171,14 +1178,22 @@ func tryGetSpiffeIDFromCert(cert *x509.Certificate) string {
 }
 
 func getSpiffeIDFromCert(cert *x509.Certificate) (string, error) {
-	if len(cert.URIs) == 0 {
-		return "", errors.New("no URI SANs in certificate")
-	}
-	spiffeID, err := idutil.NormalizeSpiffeIDURL(cert.URIs[0], idutil.AllowAny())
+	uri, err := getURISANFromCert(cert)
 	if err != nil {
 		return "", err
 	}
-	return spiffeID.String(), nil
+	return uri.String(), nil
+}
+
+func getURISANFromCert(cert *x509.Certificate) (*url.URL, error) {
+	if len(cert.URIs) == 0 {
+		return nil, errors.New("no URI SANs in certificate")
+	}
+	uri := cert.URIs[0]
+	if err := idutil.CheckIDURLNormalization(uri); err != nil {
+		return nil, fmt.Errorf("URI SAN %q is malformed: %v", uri, err)
+	}
+	return idutil.NormalizeSpiffeIDURL(uri, idutil.AllowAny())
 }
 
 func makeX509SVID(svid []*x509.Certificate) *node.X509SVID {
