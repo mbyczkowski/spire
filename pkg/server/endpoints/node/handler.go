@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/andres-erbsen/clock"
-	"github.com/golang/protobuf/ptypes/wrappers"
 	"github.com/sirupsen/logrus"
 	"github.com/spiffe/spire/pkg/common/errorutil"
 	"github.com/spiffe/spire/pkg/common/idutil"
@@ -38,6 +37,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Number of agentIDs that can be cached
@@ -60,6 +60,8 @@ type HandlerConfig struct {
 }
 
 type Handler struct {
+	node.UnsafeNodeServer
+
 	c       HandlerConfig
 	limiter Limiter
 
@@ -158,7 +160,7 @@ func (h *Handler) Attest(stream node.Node_AttestServer) (err error) {
 			return status.Error(codes.Internal, err.Error())
 		}
 		if _, err := attestStream.Recv(); err != io.EOF {
-			log.WithError(err).Warn("expected EOF on attestation stream")
+			log.WithError(err).Warn("Expected EOF on attestation stream")
 		}
 	} else {
 		attestResponse, err = h.attestToken(ctx, request.AttestationData)
@@ -170,11 +172,6 @@ func (h *Handler) Attest(stream node.Node_AttestServer) (err error) {
 
 	agentID := attestResponse.AgentId
 	log = log.WithField(telemetry.SPIFFEID, agentID)
-
-	if err := idutil.CheckAgentIDStringNormalization(agentID); err != nil {
-		log.WithError(err).Error("Agent ID is malformed")
-		return status.Errorf(codes.Internal, "agent ID is malformed: %v", err)
-	}
 
 	isBanned, err := h.isBanned(ctx, agentID)
 	switch {
@@ -360,11 +357,6 @@ func (h *Handler) FetchX509CASVID(ctx context.Context, req *node.FetchX509CASVID
 	if err != nil {
 		log.WithError(err).Error("Failed to parse X.509 CA certificate signing request")
 		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-
-	if err := idutil.CheckIDStringNormalization(csr.SpiffeID); err != nil {
-		log.WithError(err).Error("CSR SPIFFE ID is malformed")
-		return nil, status.Errorf(codes.InvalidArgument, "CSR SPIFFE ID is malformed: %v", err)
 	}
 
 	signLog.Debug("Signing downstream CA SVID")
@@ -822,7 +814,7 @@ func (h *Handler) updateNodeSelectors(ctx context.Context, baseSpiffeID string, 
 			selectors = append(selectors, resolved.Entries...)
 		}
 	} else {
-		h.c.Log.WithField(telemetry.Attestor, attestationType).Debug("could not find node resolver")
+		h.c.Log.WithField(telemetry.Attestor, attestationType).Debug("Could not find node resolver")
 	}
 
 	selectors = append(selectors, attestResponse.Selectors...)
@@ -867,7 +859,7 @@ func (h *Handler) getAttestResponse(ctx context.Context, baseSpiffeID string, sv
 func (h *Handler) getDownstreamEntry(ctx context.Context, callerID string) (*common.RegistrationEntry, error) {
 	ds := h.c.Catalog.GetDataStore()
 	response, err := ds.ListRegistrationEntries(ctx, &datastore.ListRegistrationEntriesRequest{
-		BySpiffeId: &wrappers.StringValue{
+		BySpiffeId: &wrapperspb.StringValue{
 			Value: callerID,
 		},
 	})
@@ -1178,22 +1170,14 @@ func tryGetSpiffeIDFromCert(cert *x509.Certificate) string {
 }
 
 func getSpiffeIDFromCert(cert *x509.Certificate) (string, error) {
-	uri, err := getURISANFromCert(cert)
+	if len(cert.URIs) == 0 {
+		return "", errors.New("no URI SANs in certificate")
+	}
+	spiffeID, err := idutil.NormalizeSpiffeIDURL(cert.URIs[0], idutil.AllowAny())
 	if err != nil {
 		return "", err
 	}
-	return uri.String(), nil
-}
-
-func getURISANFromCert(cert *x509.Certificate) (*url.URL, error) {
-	if len(cert.URIs) == 0 {
-		return nil, errors.New("no URI SANs in certificate")
-	}
-	uri := cert.URIs[0]
-	if err := idutil.CheckIDURLNormalization(uri); err != nil {
-		return nil, fmt.Errorf("URI SAN %q is malformed: %v", uri, err)
-	}
-	return idutil.NormalizeSpiffeIDURL(uri, idutil.AllowAny())
+	return spiffeID.String(), nil
 }
 
 func makeX509SVID(svid []*x509.Certificate) *node.X509SVID {
